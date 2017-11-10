@@ -322,6 +322,7 @@ class RnnCVAE(BaseTFModel):
             attn_cell = tf.contrib.seq2seq.AttentionWrapper(
                 dec_cell, attention_mechanism,
                 output_attention=False,
+                cell_input_fn=lambda inputs, attention: tf.concat([inputs, attention, cond_embedding], -1)
             )
             out_cell = tf.contrib.rnn.OutputProjectionWrapper(
                 attn_cell, self.vocab_size)
