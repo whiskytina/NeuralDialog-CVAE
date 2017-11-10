@@ -203,13 +203,17 @@ class RnnCVAE(BaseTFModel):
                 input_context_embedding = tf.nn.dropout(input_context_embedding, config.keep_prob)
 
         with variable_scope.variable_scope("titleRNN"):
-            sent_cell = self.get_rnncell("gru", self.sent_cell_size, config.keep_prob, 1)
-            input_title_outputs, input_title_embedding = tf.nn.dynamic_rnn(
-                sent_cell,
+            fwd_sent_cell = self.get_rnncell("gru", self.sent_cell_size, keep_prob=1.0, num_layer=1)
+            bwd_sent_cell = self.get_rnncell("gru", self.sent_cell_size, keep_prob=1.0, num_layer=1)
+            input_title_outputs, input_title_embedding = tf.nn.bidirectional_dynamic_rnn(
+                fwd_sent_cell,
+                bwd_sent_cell,
                 input_title_embedding,
                 dtype=tf.float32,
                 sequence_length=self.title_lens
             )
+            input_title_outputs = tf.concat(input_title_outputs, -1)
+            input_title_embedding = tf.concat(input_title_embedding, -1)
 
         with variable_scope.variable_scope("contextRNN"):
             enc_cell = self.get_rnncell(config.cell_type, self.context_cell_size, keep_prob=1.0, num_layer=config.num_layer)
