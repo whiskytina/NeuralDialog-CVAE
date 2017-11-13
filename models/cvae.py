@@ -141,8 +141,6 @@ class RnnCVAE(BaseTFModel):
 
         with tf.name_scope("io"):
             # all dialog context and known attributes
-            self.input_titles = tf.placeholder(dtype=tf.int32, shape=(None, self.max_utt_len), name="title")
-            self.title_lens = tf.placeholder(dtype=tf.int32, shape=(None,), name="title_len")
             self.input_contexts = tf.placeholder(dtype=tf.int32, shape=(None, None, self.max_utt_len), name="context")
             self.context_lens = tf.placeholder(dtype=tf.int32, shape=(None,), name="context_len")
 
@@ -172,7 +170,6 @@ class RnnCVAE(BaseTFModel):
                                          shape=[self.vocab_size, 1])
             embedding = self.embedding * embedding_mask
 
-            input_title_embedding = embedding_ops.embedding_lookup(embedding, self.input_titles)
             input_context_embedding = embedding_ops.embedding_lookup(embedding, tf.reshape(self.input_contexts, [-1]))
             input_context_embedding = tf.reshape(input_context_embedding, [-1, self.max_utt_len, config.embed_size])
             output_embedding = embedding_ops.embedding_lookup(embedding, self.output_tokens)
@@ -202,19 +199,6 @@ class RnnCVAE(BaseTFModel):
             if config.keep_prob < 1.0:
                 input_context_embedding = tf.nn.dropout(input_context_embedding, config.keep_prob)
 
-        with variable_scope.variable_scope("titleRNN"):
-            fwd_sent_cell = self.get_rnncell("gru", self.sent_cell_size, keep_prob=1.0, num_layer=1)
-            bwd_sent_cell = self.get_rnncell("gru", self.sent_cell_size, keep_prob=1.0, num_layer=1)
-            input_title_outputs, input_title_embedding = tf.nn.bidirectional_dynamic_rnn(
-                fwd_sent_cell,
-                bwd_sent_cell,
-                input_title_embedding,
-                dtype=tf.float32,
-                sequence_length=self.title_lens
-            )
-            input_title_outputs = tf.concat(input_title_outputs, -1)
-            input_title_embedding = tf.concat(input_title_embedding, -1)
-
         with variable_scope.variable_scope("contextRNN"):
             enc_cell = self.get_rnncell(config.cell_type, self.context_cell_size, keep_prob=1.0, num_layer=config.num_layer)
             # and enc_last_state will be same as the true last state
@@ -227,7 +211,7 @@ class RnnCVAE(BaseTFModel):
             if config.num_layer > 1:
                 enc_last_state = tf.concat(enc_last_state, 1)
 
-        cond_embedding = tf.concat([input_title_embedding, enc_last_state], 1)
+        cond_embedding = enc_last_state
 
         # combine with other attributes
         if config.use_hcf:
@@ -264,7 +248,9 @@ class RnnCVAE(BaseTFModel):
                     meta_fc1 = tf.nn.dropout(meta_fc1, config.keep_prob)
                 self.topic_logits = layers.fully_connected(meta_fc1, self.topic_vocab_size, scope="topic_project")
                 topic_prob = tf.nn.softmax(self.topic_logits)
-                pred_attribute_embedding = tf.matmul(topic_prob, t_embedding)
+                #pred_attribute_embedding = tf.matmul(topic_prob, t_embedding)
+                pred_topic = tf.argmax(topic_prob, 1)
+                pred_attribute_embedding = embedding_ops.embedding_lookup(t_embedding, pred_topic)
                 if forward:
                     selected_attribute_embedding = pred_attribute_embedding
                 else:
@@ -275,7 +261,7 @@ class RnnCVAE(BaseTFModel):
                 dec_inputs = gen_inputs
 
             # BOW loss
-            bow_fc1 = layers.fully_connected(dec_inputs, 400, activation_fn=tf.tanh, scope="bow_fc1")
+            bow_fc1 = layers.fully_connected(gen_inputs, 400, activation_fn=tf.tanh, scope="bow_fc1")
             if config.keep_prob < 1.0:
                 bow_fc1 = tf.nn.dropout(bow_fc1, config.keep_prob)
             self.bow_logits = layers.fully_connected(bow_fc1, self.vocab_size, activation_fn=None,
@@ -290,8 +276,6 @@ class RnnCVAE(BaseTFModel):
                 dec_init_state = layers.fully_connected(dec_inputs, self.dec_cell_size, activation_fn=None, scope="init_state")
 
         with variable_scope.variable_scope("decoder"):
-            #dec_cell = self.get_rnncell(config.cell_type, self.dec_cell_size, config.keep_prob, config.num_layer)
-
             # Helper
             if forward:
                 helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(
@@ -314,26 +298,13 @@ class RnnCVAE(BaseTFModel):
 
                 helper = tf.contrib.seq2seq.TrainingHelper(dec_input_embedding, dec_seq_lens)
 
-            # Create an attention mechanism
-            attention_mechanism = tf.contrib.seq2seq.BahdanauAttention(
-                self.dec_cell_size, input_title_outputs,
-                memory_sequence_length=self.title_lens)
             dec_cell = self.get_rnncell(config.cell_type, self.dec_cell_size, config.keep_prob, config.num_layer)
-            attn_cell = tf.contrib.seq2seq.AttentionWrapper(
-                dec_cell, attention_mechanism,
-                output_attention=False,
-                cell_input_fn=lambda inputs, attention: tf.concat([inputs, attention, cond_embedding], -1)
-            )
-            out_cell = tf.contrib.rnn.OutputProjectionWrapper(
-                attn_cell, self.vocab_size)
-
-            # dec_init_state must be a instance of AttentionWrapperState Class
-            dec_init_state = out_cell.zero_state(batch_size, dtype=tf.float32).clone(
-                cell_state=dec_init_state)
+            projection_layer = layers_core.Dense(self.vocab_size, use_bias=False)
 
             # Decoder
             decoder = tf.contrib.seq2seq.BasicDecoder(
-                cell=out_cell, helper=helper, initial_state=dec_init_state)
+                dec_cell, helper, dec_init_state,
+                output_layer=projection_layer)
 
             # Dynamic decoding
             outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(
@@ -395,9 +366,8 @@ class RnnCVAE(BaseTFModel):
         self.saver = tf.train.Saver(tf.global_variables(), write_version=tf.train.SaverDef.V2)
 
     def batch_2_feed(self, batch, global_t, use_prior, repeat=1):
-        titles, title_lens, contexts, context_lens, outputs, output_lens, output_topics = batch
-        feed_dict = {self.input_titles: titles, self.title_lens: title_lens,
-                     self.input_contexts: contexts, self.context_lens: context_lens,
+        contexts, context_lens, outputs, output_lens, output_topics = batch
+        feed_dict = {self.input_contexts: contexts, self.context_lens: context_lens,
                      self.output_tokens: outputs, self.output_lens: output_lens,
                      self.output_topics: output_topics, self.use_prior: use_prior}
         if repeat > 1:

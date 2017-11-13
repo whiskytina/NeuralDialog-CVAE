@@ -3,10 +3,10 @@
 
 class CVAEConfig(object):
     description = None
-    use_hcf = False  # use dialog act in training (if turn off kgCVAE -> CVAE)
+    use_hcf = True  # use dialog act in training (if turn off kgCVAE -> CVAE)
     update_limit = 3000  # the number of mini-batch before evaluating the model
 
-    vocab_size = 4000  # max vocabulary size
+    vocab_size = 30000  # max vocabulary size
 
     train_size = 3000000  # valid-dataset size
     valid_size = 2000  # valid-dataset size
@@ -47,5 +47,5 @@ class CVAEConfig(object):
     improve_threshold = 0.996  # for early stopping
     patient_increase = 2.0  # for early stopping
     early_stop = True
-    max_epoch = 50  # max number of epoch of training
+    max_epoch = 80  # max number of epoch of training
     grad_noise = 0.0  # inject gradient noise?
