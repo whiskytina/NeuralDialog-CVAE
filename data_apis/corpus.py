@@ -122,7 +122,8 @@ class Corpus(object):
             for context, response, topic in data:
                 cxt_ids = _to_id_sentence(context, self.rev_vocab)
                 res_ids = _to_id_sentence(response, self.rev_vocab)
-                topic_id = self.rev_topic_vocab[topic]
+                # topic_unk_id = self.rev_topic_vocab["<unk>"]
+                topic_id = self.rev_topic_vocab.get(topic, 0)
                 results.append((cxt_ids, res_ids, topic_id))
             return results
 
